@@ -1,0 +1,323 @@
+/* FiTerm — Sailfish OS Terminal Styles */
+
+:root {
+  --bg-color: #0b0f14;
+  --fg-color: #d8e2ec;
+  --header-bg: rgba(18, 24, 32, 0.85);
+  --toolbar-bg: rgba(14, 18, 24, 0.95);
+  --btn-bg: #1c2530;
+  --btn-active: #00d2c4;
+  --btn-fg: #f0f4f8;
+  --accent: #00d2c4;
+  --border-color: rgba(255, 255, 255, 0.1);
+  --cursor-color: #00d2c4;
+}
+
+/* Theme: Matrix */
+.theme-matrix {
+  --bg-color: #050d08;
+  --fg-color: #33ff66;
+  --header-bg: rgba(6, 20, 10, 0.9);
+  --toolbar-bg: rgba(5, 16, 8, 0.95);
+  --btn-bg: #0e2b17;
+  --btn-active: #00ff66;
+  --btn-fg: #66ff88;
+  --accent: #00ff66;
+  --border-color: rgba(0, 255, 102, 0.2);
+  --cursor-color: #00ff66;
+}
+
+/* Theme: Amber */
+.theme-amber {
+  --bg-color: #120c02;
+  --fg-color: #ffb74d;
+  --header-bg: rgba(28, 18, 5, 0.9);
+  --toolbar-bg: rgba(20, 14, 4, 0.95);
+  --btn-bg: #332206;
+  --btn-active: #ffb74d;
+  --btn-fg: #ffe082;
+  --accent: #ffa000;
+  --border-color: rgba(255, 179, 0, 0.2);
+  --cursor-color: #ffa000;
+}
+
+/* Theme: Dracula */
+.theme-dracula {
+  --bg-color: #1e1f29;
+  --fg-color: #f8f8f2;
+  --header-bg: rgba(40, 42, 54, 0.9);
+  --toolbar-bg: rgba(33, 34, 44, 0.95);
+  --btn-bg: #44475a;
+  --btn-active: #bd93f9;
+  --btn-fg: #f8f8f2;
+  --accent: #bd93f9;
+  --border-color: rgba(189, 147, 249, 0.2);
+  --cursor-color: #50fa7b;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--bg-color);
+  color: var(--fg-color);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+.fiterm-app {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  background-color: var(--bg-color);
+  color: var(--fg-color);
+  position: relative;
+  overflow: hidden;
+}
+
+/* Header */
+.terminal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 44px;
+  padding: 0 12px;
+  background-color: var(--header-bg);
+  border-bottom: 1px solid var(--border-color);
+  backdrop-filter: blur(10px);
+  z-index: 10;
+  flex-shrink: 0;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-logo {
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #757575;
+}
+
+.status-dot.online {
+  background-color: #00e676;
+  box-shadow: 0 0 6px rgba(0, 230, 118, 0.6);
+}
+
+.status-dot.offline {
+  background-color: #f44336;
+}
+
+.session-info {
+  font-size: 11px;
+  opacity: 0.75;
+  font-family: monospace;
+}
+
+.header-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.header-btn {
+  background: var(--btn-bg);
+  border: 1px solid var(--border-color);
+  color: var(--fg-color);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.header-btn:active {
+  background: var(--accent);
+  color: #000;
+}
+
+.header-btn.restart {
+  color: #ff7043;
+}
+
+/* Maliit virtual keyboard touch bridge */
+.maliit-input-bridge {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  border: none;
+  background: transparent;
+  color: transparent;
+  z-index: 5;
+  cursor: text;
+}
+
+/* Terminal Viewport */
+.terminal-viewport {
+  position: relative;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 10px;
+  font-family: 'Source Code Pro', 'DejaVu Sans Mono', 'Ubuntu Mono', 'Consolas', monospace;
+  line-height: 1.25;
+  cursor: text;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.terminal-viewport::-webkit-scrollbar {
+  width: 4px;
+}
+.terminal-viewport::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
+}
+
+.terminal-grid {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.terminal-line {
+  position: relative;
+  min-height: 1.25em;
+  line-height: 1.25em;
+  white-space: pre;
+}
+
+.term-span {
+  display: inline;
+}
+
+.term-span.bold {
+  font-weight: bold;
+}
+
+.term-span.italic {
+  font-style: italic;
+}
+
+.term-span.underline {
+  text-decoration: underline;
+}
+
+.term-span.inverse {
+  filter: invert(1);
+}
+
+/* Cursor */
+.terminal-cursor {
+  position: absolute;
+  display: inline-block;
+  width: 1ch;
+  height: 1.25em;
+  background-color: var(--cursor-color);
+  opacity: 0.8;
+  vertical-align: text-bottom;
+  pointer-events: none;
+}
+
+.terminal-cursor.blink {
+  animation: cursorBlink 1s infinite steps(1, start);
+}
+
+@keyframes cursorBlink {
+  0%, 50% { opacity: 0.85; }
+  51%, 100% { opacity: 0; }
+}
+
+/* Mobile accessory toolbar */
+.terminal-toolbar {
+  flex-shrink: 0;
+  background-color: var(--toolbar-bg);
+  border-top: 1px solid var(--border-color);
+  backdrop-filter: blur(12px);
+  padding: 6px 4px;
+  z-index: 10;
+}
+
+.toolbar-scroll {
+  display: flex;
+  gap: 5px;
+  overflow-x: auto;
+  padding: 0 4px;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.toolbar-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.toolbar-btn {
+  flex-shrink: 0;
+  min-width: 42px;
+  height: 38px;
+  padding: 0 10px;
+  border-radius: 6px;
+  background-color: var(--btn-bg);
+  color: var(--btn-fg);
+  border: 1px solid var(--border-color);
+  font-family: 'Source Code Pro', monospace;
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.1s ease;
+}
+
+.toolbar-btn:active {
+  background-color: var(--accent);
+  color: #000;
+}
+
+.toolbar-btn.modifier.active {
+  background-color: var(--accent);
+  color: #0b0f14;
+  border-color: var(--accent);
+  box-shadow: 0 0 8px rgba(0, 210, 196, 0.4);
+}
+
+.toolbar-btn.nav {
+  font-size: 15px;
+}
+
+.toolbar-btn.sym {
+  color: var(--accent);
+}
+
+.toolbar-btn.ctrl-action {
+  color: #ff8a80;
+  background: rgba(255, 82, 82, 0.1);
+  border-color: rgba(255, 82, 82, 0.3);
+}
+
+.toolbar-btn.icon-btn {
+  font-size: 12px;
+  min-width: 34px;
+}
