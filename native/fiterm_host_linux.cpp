@@ -1,4 +1,10 @@
 #include "fiterm_host.h"
+#include "fiterm_input.h"
+#ifdef FITERM_SAILFISH
+#include "sailfish_keyboard.h"
+extern "C" int sailfish_display_rotation();
+extern "C" void sailfish_display_set_rotation(int rotation);
+#endif
 
 #include <pty.h>
 #include <utmp.h>
@@ -20,7 +26,11 @@
 #include <memory>
 #include <sstream>
 
+#if __has_include("nlohmann/json.hpp")
 #include "nlohmann/json.hpp"
+#else
+#include "vendor/nlohmann/json.hpp"
+#endif
 
 namespace {
 using Json = nlohmann::json;
@@ -28,6 +38,19 @@ using Json = nlohmann::json;
 int gMasterFd = -1;
 pid_t gChildPid = -1;
 bool gIsAlive = false;
+std::string gUtf8Carry;
+
+// Number of trailing bytes forming an incomplete (but so far valid) UTF-8 sequence.
+size_t utf8IncompleteTail(const std::string &s) {
+  size_t n = s.size();
+  for (size_t back = 1; back <= 3 && back <= n; ++back) {
+    unsigned char c = static_cast<unsigned char>(s[n - back]);
+    if ((c & 0xC0) == 0x80) continue;  // continuation byte, keep looking
+    size_t need = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 1;
+    return need > back ? back : 0;
+  }
+  return 0;
+}
 
 // Simple, fast Base64 encoder for binary-safe ANSI and terminal output transmission
 static const char kB64Chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -86,6 +109,7 @@ void ptyCloseInternal() {
     waitpid(gChildPid, &status, WNOHANG);
     gChildPid = -1;
   }
+  gUtf8Carry.clear();
   gIsAlive = false;
 }
 
@@ -97,9 +121,29 @@ std::string jsonResponse(bool success, const Json &data = Json::object(), const 
   if (!error.empty()) {
     resp["error"] = error;
   }
-  return resp.dump();
+  // Never throw on stray invalid bytes from the shell; replace them with U+FFFD.
+  return resp.dump(-1, ' ', false, Json::error_handler_t::replace);
 }
 } // namespace
+
+bool gFitermAppCursorKeys = false;
+
+void fiterm_pty_write_raw(const char *data, std::size_t len) {
+  static const bool trace = [] { const char *v = std::getenv("FITERM_TRACE"); return v && *v && *v != '0'; }();
+  if (trace) std::fprintf(stderr, "[fiterm.trace] pty write %zu bytes (fd=%d alive=%d)\n", len, gMasterFd, gIsAlive ? 1 : 0);
+  if (gMasterFd < 0 || !gIsAlive || !data || len == 0) return;
+  while (len > 0) {
+    ssize_t n = write(gMasterFd, data, len);
+    if (n > 0) {
+      data += n;
+      len -= static_cast<std::size_t>(n);
+    } else if (n < 0 && errno == EINTR) {
+      continue;
+    } else {
+      break;  // EAGAIN on a full PTY buffer: drop the rest rather than block the UI
+    }
+  }
+}
 
 std::string fiterm_host_invoke(const std::string &method, const std::string &payload) {
   try {
@@ -166,6 +210,7 @@ std::string fiterm_host_invoke(const std::string &method, const std::string &pay
       // Parent process
       gChildPid = pid;
       gIsAlive = true;
+      gFitermAppCursorKeys = false;
 
       // Make master fd non-blocking
       int flags = fcntl(gMasterFd, F_GETFL, 0);
@@ -219,6 +264,20 @@ std::string fiterm_host_invoke(const std::string &method, const std::string &pay
         }
       }
 
+      // A read can end mid UTF-8 sequence; hold the partial tail back for the
+      // next read so the JSON "text" field stays valid UTF-8.
+      accumulated.insert(0, gUtf8Carry);
+      gUtf8Carry.clear();
+      size_t keep = utf8IncompleteTail(accumulated);
+      if (keep > 0) {
+        gUtf8Carry = accumulated.substr(accumulated.size() - keep);
+        accumulated.resize(accumulated.size() - keep);
+      }
+
+      {
+        static const bool trace = [] { const char *v = std::getenv("FITERM_TRACE"); return v && *v && *v != '0'; }();
+        if (trace && !accumulated.empty()) std::fprintf(stderr, "[fiterm.trace] pty read %zu bytes\n", accumulated.size());
+      }
       std::string b64 = base64Encode(reinterpret_cast<const unsigned char*>(accumulated.data()), accumulated.size());
       return jsonResponse(true, {
         {"alive", gIsAlive},
@@ -293,6 +352,60 @@ std::string fiterm_host_invoke(const std::string &method, const std::string &pay
 
     if (method == "pty.close") {
       ptyCloseInternal();
+      return jsonResponse(true);
+    }
+
+    if (method == "input.mode") {
+      gFitermAppCursorKeys = req.value("appCursor", false);
+      return jsonResponse(true);
+    }
+
+    if (method == "keyboard.toggle") {
+#ifdef FITERM_SAILFISH
+      sailfish_keyboard_toggle_forced();
+#endif
+      return jsonResponse(true);
+    }
+
+    if (method == "clipboard.set") {
+      bool ok = false;
+#ifdef FITERM_SAILFISH
+      ok = fiterm_clipboard_set(req.value("text", "").c_str());
+#endif
+      return jsonResponse(ok);
+    }
+
+    if (method == "clipboard.paste") {
+      bool ok = false;
+#ifdef FITERM_SAILFISH
+      ok = fiterm_clipboard_paste();
+#endif
+      return jsonResponse(ok);
+    }
+
+    if (method == "url.open") {
+      const std::string url = req.value("url", "");
+      if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0) {
+        return jsonResponse(false, {}, "Only http(s) URLs can be opened");
+      }
+      // Double fork so the browser launcher is never our zombie; no shell involved.
+      pid_t pid = fork();
+      if (pid == 0) {
+        if (fork() == 0) {
+          execlp("xdg-open", "xdg-open", url.c_str(), nullptr);
+        }
+        _exit(0);
+      }
+      if (pid > 0) waitpid(pid, nullptr, 0);
+      return jsonResponse(pid > 0);
+    }
+
+    if (method == "display.rotate") {
+      // Cycles portrait -> landscape -> inverted landscape -> portrait.
+#ifdef FITERM_SAILFISH
+      const int r = sailfish_display_rotation();
+      sailfish_display_set_rotation(r == 0 ? 1 : r == 1 ? 3 : 0);
+#endif
       return jsonResponse(true);
     }
 

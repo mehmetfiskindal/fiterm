@@ -37,8 +37,11 @@ export class NativeBridge {
 
     try {
       const raw = fitermHostInvoke(method, JSON.stringify(payload))
-      return JSON.parse(raw)
+      const res = JSON.parse(raw)
+      if (!res.ok) console.log('[fiterm.js] ' + method + ' failed: ' + res.error)
+      return res
     } catch (err: any) {
+      console.log('[fiterm.js] ' + method + ' threw: ' + (err?.message || 'unknown'))
       return { ok: false, error: err?.message || 'Host call failed' }
     }
   }
@@ -156,6 +159,12 @@ Type '\x1b[1;32mhelp\x1b[0m' or standard shell commands.
         return { ok: true, data: { written: input.length } }
       }
 
+      case 'input.mode':
+      case 'clipboard.set':
+      case 'clipboard.paste':
+      case 'url.open':
+      case 'display.rotate':
+      case 'keyboard.toggle':
       case 'pty.resize':
       case 'pty.signal':
       case 'pty.close':

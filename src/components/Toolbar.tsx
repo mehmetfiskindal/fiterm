@@ -5,6 +5,10 @@ export interface ToolbarProps {
   onKey: (key: string) => void
   onClear: () => void
   onToggleKeyboard: () => void
+  onScroll: (direction: number) => void
+  onRotate: () => void
+  onSelect: () => void
+  onPaste: () => void
   onFontSizeChange: (delta: number) => void
 }
 
@@ -40,6 +44,30 @@ export class Toolbar extends ReactiveComponent<GeaElement, ToolbarProps> {
     return (
       <div class="terminal-toolbar">
         <div class="toolbar-scroll">
+          <button
+            class="toolbar-btn icon-btn"
+            onClick={() => props?.onToggleKeyboard()}
+          >
+            KBD
+          </button>
+          <button
+            class="toolbar-btn icon-btn"
+            onClick={() => props?.onRotate()}
+          >
+            ROT
+          </button>
+          <button
+            class="toolbar-btn icon-btn"
+            onClick={() => props?.onSelect()}
+          >
+            SEL
+          </button>
+          <button
+            class="toolbar-btn icon-btn"
+            onClick={() => props?.onPaste()}
+          >
+            PASTE
+          </button>
           <button
             class={`toolbar-btn modifier ${this.ctrlActive ? 'active' : ''}`}
             onClick={() => this.toggleCtrl()}
@@ -147,6 +175,18 @@ export class Toolbar extends ReactiveComponent<GeaElement, ToolbarProps> {
             ^L
           </button>
 
+          <button
+            class="toolbar-btn icon-btn"
+            onClick={() => props?.onScroll(1)}
+          >
+            PgUp
+          </button>
+          <button
+            class="toolbar-btn icon-btn"
+            onClick={() => props?.onScroll(-1)}
+          >
+            PgDn
+          </button>
           <button
             class="toolbar-btn icon-btn"
             onClick={() => props?.onFontSizeChange(-1)}

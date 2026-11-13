@@ -2,156 +2,225 @@ import { AnsiState, CellStyle, FormattedCell } from './ansi'
 
 export interface TerminalSpan {
   text: string
+  // Number of terminal cells this span covers (drives its pixel width).
+  cells: number
   style: CellStyle
+  cursor: boolean
+  // First column of the span, and whether it is inside the selection.
+  col: number
+  selected: boolean
 }
 
 export interface TerminalLine {
   spans: TerminalSpan[]
 }
 
+// xterm-style screen buffer: scroll regions, insert/delete, alternate screen,
+// saved cursor, and a parser that survives escape sequences split across reads.
 export class TerminalBuffer {
   cols: number
   rows: number
   cursorRow: number = 0
   cursorCol: number = 0
   cursorVisible: boolean = true
+  // DECCKM: arrow keys must be sent as ESC O x instead of ESC [ x.
+  appCursorKeys: boolean = false
 
   private ansi: AnsiState = new AnsiState()
   private screen: FormattedCell[][] = []
   private scrollback: FormattedCell[][] = []
-  private altScreen: FormattedCell[][] | null = null
-  private maxScrollback: number = 2000
+  private mainScreen: FormattedCell[][] | null = null
+  private maxScrollback: number = 1000
+  private scrollTop: number = 0
+  private scrollBottom: number = 0
+  private savedRow: number = 0
+  private savedCol: number = 0
+  private altSavedRow: number = 0
+  private altSavedCol: number = 0
+  private pending: string = ''
+  private replies: string = ''
 
   constructor(cols = 80, rows = 24) {
     this.cols = cols
     this.rows = rows
-    this.initScreen()
+    this.scrollBottom = rows - 1
+    this.screen = this.createGrid()
   }
 
-  private initScreen() {
-    this.screen = []
+  private createGrid(): FormattedCell[][] {
+    const grid: FormattedCell[][] = []
     for (let r = 0; r < this.rows; r++) {
-      this.screen.push(this.createEmptyRow())
+      grid.push(this.createEmptyRow())
     }
+    return grid
+  }
+
+  private blankCell(): FormattedCell {
+    const style: CellStyle = {}
+    const bg = this.ansi.cloneStyle().bg
+    if (bg) style.bg = bg
+    return { char: ' ', style }
   }
 
   private createEmptyRow(): FormattedCell[] {
     const row: FormattedCell[] = []
-    const emptyStyle = this.ansi.cloneStyle()
     for (let c = 0; c < this.cols; c++) {
-      row.push({ char: ' ', style: emptyStyle })
+      row.push(this.blankCell())
     }
     return row
   }
 
+  private resizeGrid(grid: FormattedCell[][], keepScrollback: boolean): FormattedCell[][] {
+    const out: FormattedCell[][] = []
+    let drop = grid.length - this.rows
+    if (drop < 0) drop = 0
+    for (let r = 0; r < grid.length; r++) {
+      const row = grid[r]
+      if (r < drop) {
+        if (keepScrollback) this.pushScrollback(row)
+        continue
+      }
+      const next: FormattedCell[] = []
+      for (let c = 0; c < this.cols; c++) {
+        if (c < row.length) next.push(row[c])
+        else next.push({ char: ' ', style: {} })
+      }
+      out.push(next)
+    }
+    while (out.length < this.rows) {
+      out.push(this.createEmptyRow())
+    }
+    return out
+  }
+
   resize(cols: number, rows: number) {
     if (cols === this.cols && rows === this.rows) return
+    const dropped = this.rows > rows ? this.rows - rows : 0
     this.cols = cols
     this.rows = rows
-
-    // Adjust row count
-    while (this.screen.length < this.rows) {
-      this.screen.push(this.createEmptyRow())
-    }
-    while (this.screen.length > this.rows) {
-      const top = this.screen.shift()
-      if (top) this.scrollback.push(top)
-    }
-
-    // Adjust col count
-    for (let r = 0; r < this.screen.length; r++) {
-      while (this.screen[r].length < this.cols) {
-        this.screen[r].push({ char: ' ', style: {} })
-      }
-      if (this.screen[r].length > this.cols) {
-        this.screen[r] = this.screen[r].slice(0, this.cols)
-      }
-    }
-
-    if (this.cursorRow >= this.rows) this.cursorRow = this.rows - 1
-    if (this.cursorCol >= this.cols) this.cursorCol = this.cols - 1
+    const inAlt = this.mainScreen !== null
+    this.screen = this.resizeGrid(this.screen, !inAlt)
+    if (this.mainScreen) this.mainScreen = this.resizeGrid(this.mainScreen, true)
+    this.scrollTop = 0
+    this.scrollBottom = rows - 1
+    this.cursorRow = this.cursorRow - dropped
+    if (this.cursorRow < 0) this.cursorRow = 0
+    if (this.cursorRow >= rows) this.cursorRow = rows - 1
+    if (this.cursorCol >= cols) this.cursorCol = cols - 1
   }
 
   clear() {
-    this.initScreen()
+    this.screen = this.createGrid()
     this.scrollback = []
     this.cursorRow = 0
     this.cursorCol = 0
     this.ansi.reset()
   }
 
-  write(data: string) {
-    let i = 0
+  // Bytes the terminal must send back to the program (cursor position reports).
+  takeReplies(): string {
+    const out = this.replies
+    this.replies = ''
+    return out
+  }
+
+  scrollbackLength(): number {
+    return this.mainScreen ? 0 : this.scrollback.length
+  }
+
+  private pushScrollback(row: FormattedCell[]) {
+    this.scrollback.push(row)
+    if (this.scrollback.length > this.maxScrollback) {
+      this.scrollback.shift()
+    }
+  }
+
+  write(input: string) {
+    const data = this.pending + input
+    this.pending = ''
     const len = data.length
+    let i = 0
 
     while (i < len) {
       const char = data[i]
 
-      // Handle ESC sequences
       if (char === '\x1b') {
+        if (i + 1 >= len) {
+          this.pending = data.slice(i)
+          return
+        }
         const next = data[i + 1]
+
         if (next === '[') {
-          // CSI Sequence
           let j = i + 2
-          let paramsStr = ''
-          while (j < len && (data[j] >= '0' && data[j] <= '9' || data[j] === ';' || data[j] === '?')) {
-            paramsStr += data[j]
+          let params = ''
+          while (j < len && data[j] >= ' ' && data[j] <= '?') {
+            params += data[j]
             j++
           }
-          const command = data[j]
-          this.handleCsi(paramsStr, command)
+          if (j >= len) {
+            this.pending = data.slice(i)
+            return
+          }
+          this.handleCsi(params, data[j])
           i = j + 1
           continue
-        } else if (next === ']') {
-          // OSC Sequence (e.g. title) - skip to BEL or ST
+        }
+
+        if (next === ']' || next === 'P' || next === '^' || next === '_') {
+          // OSC / DCS / PM / APC: skip to BEL or ESC \
           let j = i + 2
-          while (j < len && data[j] !== '\x07' && !(data[j] === '\x1b' && data[j + 1] === '\\')) {
+          let end = -1
+          while (j < len) {
+            if (data[j] === '\x07') {
+              end = j + 1
+              break
+            }
+            if (data[j] === '\x1b' && j + 1 < len && data[j + 1] === '\\') {
+              end = j + 2
+              break
+            }
             j++
           }
-          i = data[j] === '\x1b' ? j + 2 : j + 1
+          if (end < 0) {
+            // Unterminated: wait for more, but never buffer without bound.
+            if (len - i < 4096) this.pending = data.slice(i)
+            return
+          }
+          i = end
           continue
-        } else if (next === '(' || next === ')') {
-          // Character set selection
+        }
+
+        if (next === '(' || next === ')' || next === '*' || next === '+' || next === '#' || next === '%') {
+          if (i + 2 >= len) {
+            this.pending = data.slice(i)
+            return
+          }
           i += 3
           continue
-        } else {
-          i += 2
-          continue
         }
+
+        this.handleEsc(next)
+        i += 2
+        continue
       }
 
-      // Handle Control Characters
       if (char === '\r') {
         this.cursorCol = 0
-        i++
-        continue
-      }
-      if (char === '\n') {
-        this.newLine()
-        i++
-        continue
-      }
-      if (char === '\b') {
+      } else if (char === '\n' || char === '\x0b' || char === '\x0c') {
+        this.lineFeed()
+      } else if (char === '\b') {
+        if (this.cursorCol >= this.cols) this.cursorCol = this.cols - 1
         if (this.cursorCol > 0) this.cursorCol--
-        i++
-        continue
+      } else if (char === '\t') {
+        let nextTab = (Math.floor(this.cursorCol / 8) + 1) * 8
+        if (nextTab > this.cols - 1) nextTab = this.cols - 1
+        this.cursorCol = nextTab
+      } else if (char < ' ' || char === '\x7f') {
+        // Other control characters (BEL, SO, SI, ...) are ignored.
+      } else {
+        this.putChar(char)
       }
-      if (char === '\t') {
-        const nextTab = Math.min(this.cols - 1, (Math.floor(this.cursorCol / 8) + 1) * 8)
-        while (this.cursorCol < nextTab) {
-          this.putChar(' ')
-        }
-        i++
-        continue
-      }
-      if (char === '\x07') {
-        // Bell - ignore
-        i++
-        continue
-      }
-
-      // Printable character
-      this.putChar(char)
       i++
     }
   }
@@ -159,174 +228,391 @@ export class TerminalBuffer {
   private putChar(char: string) {
     if (this.cursorCol >= this.cols) {
       this.cursorCol = 0
-      this.newLine()
+      this.lineFeed()
     }
-    if (this.cursorRow < this.rows && this.cursorCol < this.cols) {
-      this.screen[this.cursorRow][this.cursorCol] = {
-        char,
-        style: this.ansi.cloneStyle()
-      }
-      this.cursorCol++
+    this.screen[this.cursorRow][this.cursorCol] = {
+      char,
+      style: this.ansi.cloneStyle()
+    }
+    this.cursorCol++
+  }
+
+  private lineFeed() {
+    if (this.cursorRow === this.scrollBottom) {
+      this.scrollUp(1)
+    } else if (this.cursorRow < this.rows - 1) {
+      this.cursorRow++
     }
   }
 
-  private newLine() {
-    if (this.cursorRow < this.rows - 1) {
-      this.cursorRow++
-    } else {
-      // Scroll down
-      const topRow = this.screen.shift()
-      if (topRow) {
-        this.scrollback.push(topRow)
-        if (this.scrollback.length > this.maxScrollback) {
-          this.scrollback.shift()
-        }
+  private reverseIndex() {
+    if (this.cursorRow === this.scrollTop) {
+      this.scrollDown(1)
+    } else if (this.cursorRow > 0) {
+      this.cursorRow--
+    }
+  }
+
+  private scrollUp(count: number) {
+    for (let n = 0; n < count; n++) {
+      if (this.scrollTop === 0 && this.mainScreen === null) {
+        this.pushScrollback(this.screen[0])
       }
-      this.screen.push(this.createEmptyRow())
+      for (let r = this.scrollTop; r < this.scrollBottom; r++) {
+        this.screen[r] = this.screen[r + 1]
+      }
+      this.screen[this.scrollBottom] = this.createEmptyRow()
+    }
+  }
+
+  private scrollDown(count: number) {
+    for (let n = 0; n < count; n++) {
+      for (let r = this.scrollBottom; r > this.scrollTop; r--) {
+        this.screen[r] = this.screen[r - 1]
+      }
+      this.screen[this.scrollTop] = this.createEmptyRow()
+    }
+  }
+
+  private insertLines(count: number) {
+    if (this.cursorRow < this.scrollTop || this.cursorRow > this.scrollBottom) return
+    for (let n = 0; n < count; n++) {
+      for (let r = this.scrollBottom; r > this.cursorRow; r--) {
+        this.screen[r] = this.screen[r - 1]
+      }
+      this.screen[this.cursorRow] = this.createEmptyRow()
+    }
+  }
+
+  private deleteLines(count: number) {
+    if (this.cursorRow < this.scrollTop || this.cursorRow > this.scrollBottom) return
+    for (let n = 0; n < count; n++) {
+      for (let r = this.cursorRow; r < this.scrollBottom; r++) {
+        this.screen[r] = this.screen[r + 1]
+      }
+      this.screen[this.scrollBottom] = this.createEmptyRow()
+    }
+  }
+
+  private eraseCells(row: number, from: number, to: number) {
+    const line = this.screen[row]
+    for (let c = from; c < to && c < this.cols; c++) {
+      line[c] = this.blankCell()
+    }
+  }
+
+  private setCursor(row: number, col: number) {
+    if (row < 0) row = 0
+    if (row > this.rows - 1) row = this.rows - 1
+    if (col < 0) col = 0
+    if (col > this.cols - 1) col = this.cols - 1
+    this.cursorRow = row
+    this.cursorCol = col
+  }
+
+  private enterAltScreen(saveCursor: boolean) {
+    if (this.mainScreen !== null) return
+    if (saveCursor) {
+      this.altSavedRow = this.cursorRow
+      this.altSavedCol = this.cursorCol
+    }
+    this.mainScreen = this.screen
+    this.screen = this.createGrid()
+  }
+
+  private leaveAltScreen(restoreCursor: boolean) {
+    if (this.mainScreen === null) return
+    this.screen = this.mainScreen
+    this.mainScreen = null
+    this.scrollTop = 0
+    this.scrollBottom = this.rows - 1
+    if (restoreCursor) this.setCursor(this.altSavedRow, this.altSavedCol)
+  }
+
+  private handleEsc(code: string) {
+    if (code === '7') {
+      this.savedRow = this.cursorRow
+      this.savedCol = this.cursorCol
+    } else if (code === '8') {
+      this.setCursor(this.savedRow, this.savedCol)
+    } else if (code === 'M') {
+      this.reverseIndex()
+    } else if (code === 'D') {
+      this.lineFeed()
+    } else if (code === 'E') {
+      this.cursorCol = 0
+      this.lineFeed()
+    } else if (code === 'c') {
+      this.leaveAltScreen(false)
+      this.ansi.reset()
+      this.screen = this.createGrid()
+      this.scrollTop = 0
+      this.scrollBottom = this.rows - 1
+      this.cursorRow = 0
+      this.cursorCol = 0
+      this.cursorVisible = true
+      this.appCursorKeys = false
+    }
+  }
+
+  private setMode(mode: number, on: boolean) {
+    if (mode === 1) {
+      this.appCursorKeys = on
+    } else if (mode === 25) {
+      this.cursorVisible = on
+    } else if (mode === 47 || mode === 1047) {
+      if (on) this.enterAltScreen(false)
+      else this.leaveAltScreen(false)
+    } else if (mode === 1049) {
+      if (on) this.enterAltScreen(true)
+      else this.leaveAltScreen(true)
     }
   }
 
   private handleCsi(paramsStr: string, cmd: string) {
-    const isPrivate = paramsStr.startsWith('?')
-    const cleanParams = isPrivate ? paramsStr.slice(1) : paramsStr
-    const parts = cleanParams.length > 0 ? cleanParams.split(';').map(p => parseInt(p, 10)) : []
+    let prefix = ''
+    let body = paramsStr
+    if (body.length > 0 && (body[0] === '?' || body[0] === '>' || body[0] === '=' || body[0] === '<')) {
+      prefix = body[0]
+      body = body.slice(1)
+    }
+    // Sequences with intermediate bytes (CSI Ps SP q, CSI ! p, ...) are not used.
+    for (let k = 0; k < body.length; k++) {
+      if (body[k] < '0') return
+    }
+
+    const parts: number[] = []
+    if (body.length > 0) {
+      const raw = body.split(';')
+      for (let k = 0; k < raw.length; k++) {
+        const v = raw[k].length > 0 ? parseInt(raw[k], 10) : 0
+        parts.push(v > 0 ? v : 0)
+      }
+    }
+    const p0 = parts.length > 0 ? parts[0] : 0
+    const p1 = parts.length > 1 ? parts[1] : 0
+    const n = p0 > 0 ? p0 : 1
+
+    if (prefix === '?') {
+      if (cmd === 'h' || cmd === 'l') {
+        for (let k = 0; k < parts.length; k++) this.setMode(parts[k], cmd === 'h')
+      }
+      return
+    }
+    if (prefix === '>') {
+      if (cmd === 'c') this.replies += '\x1b[>0;276;0c'
+      return
+    }
+    if (prefix !== '') return
+
+    if (this.cursorCol >= this.cols && cmd !== 'm') this.cursorCol = this.cols - 1
 
     switch (cmd) {
-      case 'm': // SGR Color & Style
+      case 'm':
         this.ansi.processSgr(parts)
         break
-
-      case 'H': // Cursor Position
-      case 'f': {
-        const row = (parts[0] || 1) - 1
-        const col = (parts[1] || 1) - 1
-        this.cursorRow = Math.max(0, Math.min(this.rows - 1, row))
-        this.cursorCol = Math.max(0, Math.min(this.cols - 1, col))
+      case 'H':
+      case 'f':
+        this.setCursor((p0 > 0 ? p0 : 1) - 1, (p1 > 0 ? p1 : 1) - 1)
         break
-      }
-
-      case 'A': { // Cursor Up
-        const count = parts[0] || 1
-        this.cursorRow = Math.max(0, this.cursorRow - count)
+      case 'A':
+        this.setCursor(this.cursorRow - n, this.cursorCol)
         break
-      }
-
-      case 'B': { // Cursor Down
-        const count = parts[0] || 1
-        this.cursorRow = Math.min(this.rows - 1, this.cursorRow + count)
+      case 'B':
+      case 'e':
+        this.setCursor(this.cursorRow + n, this.cursorCol)
         break
-      }
-
-      case 'C': { // Cursor Forward
-        const count = parts[0] || 1
-        this.cursorCol = Math.min(this.cols - 1, this.cursorCol + count)
+      case 'C':
+      case 'a':
+        this.setCursor(this.cursorRow, this.cursorCol + n)
         break
-      }
-
-      case 'D': { // Cursor Back
-        const count = parts[0] || 1
-        this.cursorCol = Math.max(0, this.cursorCol - count)
+      case 'D':
+        this.setCursor(this.cursorRow, this.cursorCol - n)
         break
-      }
-
-      case 'J': { // Erase in Display
-        const mode = parts[0] || 0
-        if (mode === 2) {
-          // Clear entire screen
-          for (let r = 0; r < this.rows; r++) {
-            this.screen[r] = this.createEmptyRow()
-          }
-          this.cursorRow = 0
-          this.cursorCol = 0
-        } else if (mode === 0) {
-          // Clear from cursor to end
-          for (let c = this.cursorCol; c < this.cols; c++) {
-            this.screen[this.cursorRow][c] = { char: ' ', style: this.ansi.cloneStyle() }
-          }
-          for (let r = this.cursorRow + 1; r < this.rows; r++) {
-            this.screen[r] = this.createEmptyRow()
-          }
+      case 'E':
+        this.setCursor(this.cursorRow + n, 0)
+        break
+      case 'F':
+        this.setCursor(this.cursorRow - n, 0)
+        break
+      case 'G':
+      case '`':
+        this.setCursor(this.cursorRow, n - 1)
+        break
+      case 'd':
+        this.setCursor(n - 1, this.cursorCol)
+        break
+      case 'J':
+        if (p0 === 0) {
+          this.eraseCells(this.cursorRow, this.cursorCol, this.cols)
+          for (let r = this.cursorRow + 1; r < this.rows; r++) this.screen[r] = this.createEmptyRow()
+        } else if (p0 === 1) {
+          for (let r = 0; r < this.cursorRow; r++) this.screen[r] = this.createEmptyRow()
+          this.eraseCells(this.cursorRow, 0, this.cursorCol + 1)
+        } else if (p0 === 2) {
+          for (let r = 0; r < this.rows; r++) this.screen[r] = this.createEmptyRow()
+        } else if (p0 === 3) {
+          this.scrollback = []
+        }
+        break
+      case 'K':
+        if (p0 === 0) this.eraseCells(this.cursorRow, this.cursorCol, this.cols)
+        else if (p0 === 1) this.eraseCells(this.cursorRow, 0, this.cursorCol + 1)
+        else if (p0 === 2) this.eraseCells(this.cursorRow, 0, this.cols)
+        break
+      case 'L':
+        this.insertLines(n)
+        break
+      case 'M':
+        this.deleteLines(n)
+        break
+      case 'P': {
+        const line = this.screen[this.cursorRow]
+        for (let c = this.cursorCol; c < this.cols; c++) {
+          line[c] = c + n < this.cols ? line[c + n] : this.blankCell()
         }
         break
       }
-
-      case 'K': { // Erase in Line
-        const mode = parts[0] || 0
-        if (mode === 0) {
-          // Clear cursor to end of line
-          for (let c = this.cursorCol; c < this.cols; c++) {
-            this.screen[this.cursorRow][c] = { char: ' ', style: this.ansi.cloneStyle() }
-          }
-        } else if (mode === 1) {
-          // Clear start of line to cursor
-          for (let c = 0; c <= this.cursorCol; c++) {
-            this.screen[this.cursorRow][c] = { char: ' ', style: this.ansi.cloneStyle() }
-          }
-        } else if (mode === 2) {
-          // Clear entire line
-          this.screen[this.cursorRow] = this.createEmptyRow()
+      case '@': {
+        const line = this.screen[this.cursorRow]
+        for (let c = this.cols - 1; c >= this.cursorCol; c--) {
+          line[c] = c - n >= this.cursorCol ? line[c - n] : this.blankCell()
         }
         break
       }
-
-      case 'h': // Set Mode
-        if (isPrivate) {
-          if (parts[0] === 25) this.cursorVisible = true
-          if (parts[0] === 1049) {
-            // Alternate buffer
-            if (!this.altScreen) {
-              this.altScreen = this.screen
-              this.initScreen()
-            }
-          }
-        }
+      case 'X':
+        this.eraseCells(this.cursorRow, this.cursorCol, this.cursorCol + n)
         break
-
-      case 'l': // Reset Mode
-        if (isPrivate) {
-          if (parts[0] === 25) this.cursorVisible = false
-          if (parts[0] === 1049) {
-            // Restore normal buffer
-            if (this.altScreen) {
-              this.screen = this.altScreen
-              this.altScreen = null
-            }
-          }
+      case 'S':
+        this.scrollUp(n)
+        break
+      case 'T':
+        this.scrollDown(n)
+        break
+      case 'r': {
+        const top = (p0 > 0 ? p0 : 1) - 1
+        const bottom = (p1 > 0 ? p1 : this.rows) - 1
+        if (top < bottom && bottom < this.rows) {
+          this.scrollTop = top
+          this.scrollBottom = bottom
+        } else {
+          this.scrollTop = 0
+          this.scrollBottom = this.rows - 1
         }
+        this.setCursor(0, 0)
+        break
+      }
+      case 's':
+        this.savedRow = this.cursorRow
+        this.savedCol = this.cursorCol
+        break
+      case 'u':
+        this.setCursor(this.savedRow, this.savedCol)
+        break
+      case 'n':
+        if (p0 === 6) this.replies += '\x1b[' + (this.cursorRow + 1) + ';' + (this.cursorCol + 1) + 'R'
+        else if (p0 === 5) this.replies += '\x1b[0n'
+        break
+      case 'c':
+        this.replies += '\x1b[?1;2c'
         break
     }
   }
 
-  // Get lines formatted into spans for high-efficiency rendering
-  getRenderableLines(): TerminalLine[] {
-    const allRows = [...this.scrollback, ...this.screen]
+  // The `rows` lines currently on screen, `scrollOffset` lines back into the
+  // scrollback, each split into same-style spans. The cursor is its own span.
+  getRenderableLines(scrollOffset = 0, selecting = false, selStart = -1, selEnd = -1): TerminalLine[] {
+    const sbLen = this.scrollbackLength()
+    let offset = scrollOffset
+    if (offset > sbLen) offset = sbLen
+    if (offset < 0) offset = 0
     const lines: TerminalLine[] = []
 
-    for (const row of allRows) {
-      const spans: TerminalSpan[] = []
-      let currentSpan: TerminalSpan | null = null
+    for (let k = 0; k < this.rows; k++) {
+      const idx = sbLen - offset + k
+      const row = idx < sbLen ? this.scrollback[idx] : this.screen[idx - sbLen]
+      const screenRow = idx - sbLen
+      let cursorAt = -1
+      if (!selecting && this.cursorVisible && screenRow === this.cursorRow) {
+        cursorAt = this.cursorCol < this.cols ? this.cursorCol : this.cols - 1
+      }
 
-      for (const cell of row) {
-        if (!currentSpan) {
-          currentSpan = { text: cell.char, style: cell.style }
-        } else if (this.isStyleEqual(currentSpan.style, cell.style)) {
-          currentSpan.text += cell.char
+      const spans: TerminalSpan[] = []
+      let current: TerminalSpan | null = null
+      let currentBlank = false
+      const width = row.length < this.cols ? row.length : this.cols
+
+      for (let c = 0; c < width; c++) {
+        const cell = row[c]
+        const isCursor = c === cursorAt
+        const blank = cell.char === ' '
+        const linear = k * this.cols + c
+        const selected = selecting && linear >= selStart && linear <= selEnd
+        // In select mode every word is its own span, so it can be tapped.
+        const sameWord = !selecting || blank === currentBlank
+        if (
+          current !== null && !isCursor && !current.cursor && sameWord &&
+          current.selected === selected && this.isStyleEqual(current.style, cell.style)
+        ) {
+          current.text += cell.char
+          current.cells++
         } else {
-          spans.push(currentSpan)
-          currentSpan = { text: cell.char, style: cell.style }
+          if (current !== null) spans.push(current)
+          current = { text: cell.char, cells: 1, style: cell.style, cursor: isCursor, col: c, selected }
+          currentBlank = blank
         }
       }
-      if (currentSpan) {
-        // Trim trailing empty space for rendering performance
-        currentSpan.text = currentSpan.text.replace(/\s+$/, '')
-        if (currentSpan.text.length > 0 || spans.length > 0) {
-          spans.push(currentSpan)
+      if (current !== null) spans.push(current)
+
+      // Drop trailing blank, unstyled cells: nothing to paint there.
+      while (spans.length > 0) {
+        const last = spans[spans.length - 1]
+        if (last.cursor || last.selected || last.style.bg || last.style.inverse) break
+        const trimmed = last.text.replace(/\s+$/, '')
+        if (trimmed.length === 0) {
+          spans.pop()
+          continue
         }
+        last.cells = last.cells - (last.text.length - trimmed.length)
+        last.text = trimmed
+        break
       }
-      lines.push({ spans: spans.length > 0 ? spans : [{ text: ' ', style: {} }] })
+
+      lines.push({ spans })
     }
 
     return lines
+  }
+
+  // Text between two cells of the current view (linear index = line * cols +
+  // col, inclusive). A row filled to its last column is treated as wrapped and
+  // joined to the next one without a newline, so long URLs come out whole.
+  getText(scrollOffset: number, start: number, end: number): string {
+    const sbLen = this.scrollbackLength()
+    let offset = scrollOffset
+    if (offset > sbLen) offset = sbLen
+    if (offset < 0) offset = 0
+    let out = ''
+    const firstLine = Math.floor(start / this.cols)
+    const lastLine = Math.floor(end / this.cols)
+
+    for (let k = firstLine; k <= lastLine && k < this.rows; k++) {
+      const idx = sbLen - offset + k
+      const row = idx < sbLen ? this.scrollback[idx] : this.screen[idx - sbLen]
+      const from = k === firstLine ? start - k * this.cols : 0
+      let to = k === lastLine ? end - k * this.cols : this.cols - 1
+      if (to > row.length - 1) to = row.length - 1
+      let text = ''
+      for (let c = from; c <= to; c++) text += row[c].char
+      const wrapped = k < lastLine && row.length >= this.cols && row[this.cols - 1].char !== ' '
+      if (wrapped) {
+        out += text
+      } else {
+        out += text.replace(/\s+$/, '')
+        if (k < lastLine) out += '\n'
+      }
+    }
+    return out
   }
 
   private isStyleEqual(a: CellStyle, b: CellStyle): boolean {

@@ -14,6 +14,7 @@ bool (*appendTextCallback)(const char *) = nullptr;
 bool (*backspaceCallback)() = nullptr;
 bool keyboardVisible = false;
 int focusedInputId = -1;
+int forcedState = -1;  // -1 follow input focus, 0 forced hidden, 1 forced shown
 
 gboolean commitString(MaliitContext *source, GDBusMethodInvocation *invocation,
                       const gchar *text, gint, gint, gint, gpointer) {
@@ -65,8 +66,11 @@ void sailfish_keyboard_pump() {
 
 void sailfish_keyboard_update(int activeInputId, const char *inputType) {
   if (!inputMethod) return;
-  const bool shouldShow = activeInputId >= 0;
+  const bool shouldShow = forcedState >= 0 ? forcedState == 1 : activeInputId >= 0;
   if (shouldShow == keyboardVisible && activeInputId == focusedInputId) return;
+  if (activeInputId != focusedInputId) {
+    std::fprintf(stderr, "[sailfish keyboard] focus %d -> %d\n", focusedInputId, activeInputId);
+  }
   focusedInputId = activeInputId;
   if (server) {
     const bool hidden = inputType && std::strcmp(inputType, "password") == 0;
@@ -74,7 +78,11 @@ void sailfish_keyboard_update(int activeInputId, const char *inputType) {
     g_variant_builder_init(&builder, G_VARIANT_TYPE_VARDICT);
     g_variant_builder_add(&builder, "{sv}", "focusState", g_variant_new_boolean(shouldShow));
     g_variant_builder_add(&builder, "{sv}", "hiddenText", g_variant_new_boolean(hidden));
-    g_variant_builder_add(&builder, "{sv}", "predictionEnabled", g_variant_new_boolean(!hidden));
+    // Terminal input: commit every key immediately, no word prediction,
+    // auto-correction or auto-capitalization (they hold text back as preedit).
+    g_variant_builder_add(&builder, "{sv}", "predictionEnabled", g_variant_new_boolean(false));
+    g_variant_builder_add(&builder, "{sv}", "correctionEnabled", g_variant_new_boolean(false));
+    g_variant_builder_add(&builder, "{sv}", "autocapitalizationEnabled", g_variant_new_boolean(false));
     GVariant *state = g_variant_ref_sink(g_variant_builder_end(&builder));
     GError *error = nullptr;
     if (!maliit_server_call_update_widget_information_sync(server, state, TRUE, nullptr, &error)) {
@@ -88,4 +96,9 @@ void sailfish_keyboard_update(int activeInputId, const char *inputType) {
   if (shouldShow) maliit_input_method_show(inputMethod);
   else maliit_input_method_hide(inputMethod);
   std::fprintf(stderr, "[sailfish keyboard] %s input=%d\n", shouldShow ? "show" : "hide", activeInputId);
+}
+
+void sailfish_keyboard_toggle_forced() {
+  forcedState = keyboardVisible ? 0 : 1;
+  std::fprintf(stderr, "[sailfish keyboard] forced %s\n", forcedState == 1 ? "on" : "off");
 }

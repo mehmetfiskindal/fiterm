@@ -1,5 +1,12 @@
 /* FiTerm — Sailfish OS Terminal Styles */
 
+/* The engine only renders fonts embedded through @font-face; without one it
+   falls back to an ASCII-only bitmap font. */
+@font-face {
+  font-family: 'DejaVu Sans Mono';
+  src: url('../assets/fonts/DejaVuSansMono.ttf');
+}
+
 :root {
   --bg-color: #0b0f14;
   --fg-color: #d8e2ec;
@@ -69,7 +76,7 @@ html, body {
   overflow: hidden;
   background-color: var(--bg-color);
   color: var(--fg-color);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-family: 'DejaVu Sans Mono';
 }
 
 .fiterm-app {
@@ -129,7 +136,7 @@ html, body {
 .session-info {
   font-size: 11px;
   opacity: 0.75;
-  font-family: monospace;
+  font-family: 'DejaVu Sans Mono';
 }
 
 .header-actions {
@@ -159,13 +166,17 @@ html, body {
 }
 
 /* Maliit virtual keyboard touch bridge */
+/* A 1px input in the corner: it only exists to hold keyboard focus. It must not
+   cover the terminal or use opacity: 0, which made the renderer drop the
+   terminal text along with it. */
 .maliit-input-bridge {
   position: absolute;
-  top: 0;
+  bottom: 0;
   left: 0;
-  width: 100%;
-  height: 100%;
-  opacity: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  outline: none;
   border: none;
   background: transparent;
   color: transparent;
@@ -175,16 +186,20 @@ html, body {
 
 /* Terminal Viewport */
 .terminal-viewport {
-  position: relative;
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 8px 10px;
-  font-family: 'Source Code Pro', 'DejaVu Sans Mono', 'Ubuntu Mono', 'Consolas', monospace;
-  line-height: 1.25;
+  /* Pinned between the header (44px + 1px border) and the toolbar (52px).
+     The embedded layout engine ignored `flex: 1` here and collapsed the
+     terminal to zero height, hiding all of its text. */
+  position: absolute;
+  top: 45px;
+  bottom: 52px;
+  left: 0;
+  right: 0;
+  overflow: hidden;
+  padding: 4px 6px;
+  font-family: 'DejaVu Sans Mono';
+  line-height: 1.3;
   cursor: text;
-  word-break: break-all;
-  white-space: pre-wrap;
+  white-space: pre;
 }
 
 .terminal-viewport::-webkit-scrollbar {
@@ -199,58 +214,90 @@ html, body {
   display: flex;
   flex-direction: column;
   min-height: 100%;
+  /* Taps must fall through to the hidden input below, or it never gets focus
+     and the keyboard never opens. */
+  pointer-events: none;
+}
+
+/* Select mode: same grid, but its word spans receive taps. */
+.terminal-grid-select {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.term-span.selected {
+  background-color: var(--accent);
+  color: #0b0f14;
+}
+
+/* Replaces the header while selecting. */
+.select-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 45px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  background-color: var(--bg-color);
+  border-bottom: 1px solid var(--accent);
+  z-index: 20;
+}
+
+.select-hint {
+  flex: 1 1 0;
+  font-size: 11px;
+  color: var(--accent);
 }
 
 .terminal-line {
-  position: relative;
-  min-height: 1.25em;
-  line-height: 1.25em;
+  /* One terminal row: fixed-width spans side by side, never wrapped. Height
+     and span widths come from App.tsx so every cell sits on the grid. */
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  overflow: hidden;
   white-space: pre;
 }
 
 .term-span {
-  display: inline;
+  flex-shrink: 0;
+  overflow: hidden;
+  white-space: pre;
 }
 
 .term-span.bold {
   font-weight: bold;
 }
 
-.term-span.italic {
-  font-style: italic;
+.term-span.dim {
+  opacity: 0.6;
 }
 
-.term-span.underline {
-  text-decoration: underline;
-}
-
+/* Reverse video with default colors; explicit colors are swapped inline. */
 .term-span.inverse {
-  filter: invert(1);
+  background-color: var(--fg-color);
+  color: var(--bg-color);
 }
 
-/* Cursor */
-.terminal-cursor {
-  position: absolute;
-  display: inline-block;
-  width: 1ch;
-  height: 1.25em;
+/* The cursor is the cell itself, drawn as a block. */
+.term-span.cursor {
   background-color: var(--cursor-color);
-  opacity: 0.8;
-  vertical-align: text-bottom;
-  pointer-events: none;
-}
-
-.terminal-cursor.blink {
-  animation: cursorBlink 1s infinite steps(1, start);
-}
-
-@keyframes cursorBlink {
-  0%, 50% { opacity: 0.85; }
-  51%, 100% { opacity: 0; }
+  color: var(--bg-color);
 }
 
 /* Mobile accessory toolbar */
 .terminal-toolbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 52px;
+  box-sizing: border-box;
   flex-shrink: 0;
   background-color: var(--toolbar-bg);
   border-top: 1px solid var(--border-color);
@@ -281,7 +328,7 @@ html, body {
   background-color: var(--btn-bg);
   color: var(--btn-fg);
   border: 1px solid var(--border-color);
-  font-family: 'Source Code Pro', monospace;
+  font-family: 'DejaVu Sans Mono';
   font-size: 13px;
   font-weight: 600;
   display: flex;

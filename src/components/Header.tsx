@@ -26,7 +26,7 @@ export class Header extends Component<GeaElement, HeaderProps> {
           <span class="app-logo">FiTerm</span>
           <span class={`status-dot ${alive ? 'online' : 'offline'}`} />
           <span class="session-info">
-            {alive ? `PID ${pid}` : 'Exited'} · {shell.split('/').pop()} · {cols}x{rows}
+            {alive ? `PID ${pid}` : 'Exited'} | {shell.split('/').pop()} | {cols}x{rows}
           </span>
         </div>
         <div class="header-actions">
