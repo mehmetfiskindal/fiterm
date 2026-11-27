@@ -66,9 +66,9 @@ The RPM is built on a PC with the Sailfish SDK (`sfdk`). The build engine VM
 stalls with 1 GB of RAM; 3.5 GB works.
 
 ```sh
-# 1. Patch GeaStack's Sailfish target and generate the C++ sources
-node patches/geastack-sailfish-build.mjs
-node node_modules/@geastack/linux/targets/sailfish-os/prepare.mjs "$PWD" aarch64
+# 1. Generate the C++ sources and apply FiTerm's stage patches
+GEA_RPIOS_FONT_LATIN_EXTENDED=1 node vendor/geastack-linux/targets/sailfish-os/prepare.mjs "$PWD" aarch64
+node patches/geastack-sailfish-build.mjs .gea-sailfish/build/fiterm-aarch64/project
 
 # 2. Build the RPM
 cd .gea-sailfish/build/fiterm-aarch64/project

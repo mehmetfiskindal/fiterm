@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Native aarch64 build of FiTerm for Sailfish OS
 #
-#   bash scripts/build-sailfish-native.sh              # build + package RPM
-#   bash scripts/build-sailfish-native.sh --compile    # compile only
-#   bash scripts/build-sailfish-native.sh --prepare    # regenerate sources first
-#   JOBS=2 bash scripts/build-sailfish-native.sh       # limit parallelism
+#   bash scripts/build-sailfish-native.sh                 # build + package RPM
+#   bash scripts/build-sailfish-native.sh --compile       # compile only
+#   bash scripts/build-sailfish-native.sh --prepare       # regenerate sources first
+#   bash scripts/build-sailfish-native.sh --prepare-only  # regenerate + patch only
+#   JOBS=2 bash scripts/build-sailfish-native.sh          # limit parallelism
 #
 set -euo pipefail
 
@@ -23,6 +24,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --compile|--compile-only) MODE="compile" ;;
     --prepare) PREPARE=1 ;;
+    --prepare-only) PREPARE=1; MODE="prepare" ;;
     -j[0-9]*) JOBS="${1#-j}" ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -44,18 +46,24 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "==> Applying GeaStack Sailfish patches for FiTerm"
-node patches/geastack-sailfish-build.mjs
+STAGE="$ROOT/.gea-sailfish/build/fiterm-$ARCH/project"
 
-if [ "$PREPARE" = 1 ] || [ ! -d "$ROOT/.gea-sailfish/build/fiterm-$ARCH/project" ]; then
+if [ "$PREPARE" = 1 ] || [ ! -d "$STAGE" ]; then
   echo "==> Preparing GeaStack Sailfish sources and stage"
-  node node_modules/@geastack/linux/targets/sailfish-os/prepare.mjs "$ROOT" "$ARCH"
+  GEA_RPIOS_FONT_LATIN_EXTENDED=1 node vendor/geastack-linux/targets/sailfish-os/prepare.mjs "$ROOT" "$ARCH"
 fi
 
-STAGE="$ROOT/.gea-sailfish/build/fiterm-$ARCH/project"
+echo "==> Applying FiTerm Sailfish stage patches"
+node patches/geastack-sailfish-build.mjs "$STAGE"
+
 if [ ! -f "$STAGE/CMakeLists.txt" ]; then
   echo "Missing prepared stage: $STAGE" >&2
   exit 1
+fi
+
+if [ "$MODE" = "prepare" ]; then
+  echo "==> Sailfish stage prepared successfully at: $STAGE"
+  exit 0
 fi
 
 if [ "$MODE" = "compile" ]; then
