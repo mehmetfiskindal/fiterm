@@ -6,17 +6,18 @@
   "scripts": {
     "dev": "gea dev",
     "build": "gea build --target web",
+    "prepare:sailfish": "bash scripts/build-sailfish-native.sh --prepare-only",
     "build:sailfish": "bash scripts/build-sailfish-native.sh",
     "check": "tsc --noEmit"
   },
   "dependencies": {
     "@geajs/core": "^1.5.1",
-    "@geastack/core": "^0.1.49",
+    "@geastack/core": "^0.1.62",
     "@geastack/cli": "^0.1.108"
   },
   "devDependencies": {
     "@geajs/vite-plugin": "^1.5.0",
-    "@geastack/linux": "^0.1.1",
+    "@geastack/linux": "file:./vendor/geastack-linux",
     "typescript": "^5.9.3",
     "vite": "latest"
   },
@@ -41,13 +42,22 @@
       "raspberry-pi-os": true
     },
     "nativeSources": [
-      "native/fiterm_host_linux.cpp"
+      "native/fiterm_host_linux.cpp",
+      "native/fiterm_input_sailfish.cpp"
     ],
     "sailfish": {
       "organizationName": "org.sailfishos",
       "applicationName": "fiterm",
       "permissions": [],
-      "devicePixelRatio": 2
+      "devicePixelRatio": 2,
+      "sandboxing": false,
+      "nativeIncludeDirectories": [
+        "native",
+        "native/vendor"
+      ],
+      "nativeSystemLibraries": [
+        "util"
+      ]
     }
   },
   "license": "MIT"
