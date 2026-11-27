@@ -16,7 +16,7 @@
   },
   "devDependencies": {
     "@geajs/vite-plugin": "^1.5.0",
-    "@geastack/linux": "^0.1.1",
+    "@geastack/linux": "file:./vendor/geastack-linux",
     "typescript": "^5.9.3",
     "vite": "latest"
   },
